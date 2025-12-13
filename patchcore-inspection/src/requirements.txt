@@ -1,0 +1,7 @@
+timm
+faiss-cpu
+opencv-python-headless
+scikit-image
+scikit-learn
+matplotlib
+numpy==1.26.4

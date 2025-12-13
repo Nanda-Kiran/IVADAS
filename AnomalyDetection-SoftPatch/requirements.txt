@@ -1,0 +1,6 @@
+timm
+faiss-cpu
+scikit-learn
+numpy<2
+torch
+torchvision
