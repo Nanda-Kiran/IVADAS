@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>IVADAS Anomaly Detection</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; }
+    h1 { margin-bottom: 0.5rem; }
+    .card {
+      border: 1px solid #ddd;
+      border-radius: 12px;
+      padding: 1rem 1.5rem;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+      margin-bottom: 1.5rem;
+    }
+    label { display: block; margin: 0.5rem 0; }
+    input[type="file"] { margin-top: 0.5rem; }
+    button {
+      padding: 0.5rem 1rem;
+      border-radius: 999px;
+      border: none;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    #previewWrapper {
+      position: relative;
+      display: inline-block;
+      margin-top: 1rem;
+    }
+    #previewImg, #heatmapCanvas {
+      max-width: 100%;
+      display: block;
+    }
+    #heatmapCanvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      mix-blend-mode: multiply;
+      opacity: 0.6;
+      pointer-events: none;
+    }
+    pre {
+      background: #f6f6f6;
+      padding: 1rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.85rem;
+    }
+    .metrics span { display: inline-block; margin-right: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>IVADAS Anomaly Detection</h1>
+  <p>Upload an image from the MVTec dataset, choose a model, and view the anomaly score and heatmap.</p>
+
+  <div class="card">
+    <label>
+      Model:
+      <select id="model">
+        <option value="patchcore">PatchCore (baseline)</option>
+        <option value="softpatch">SoftPatch (candidate)</option>
+      </select>
+    </label>
+
+    <label>
+      Class name:
+      <input id="class_name" value="bottle" />
+    </label>
+
+    <label>
+      Image:
+      <input type="file" id="fileInput" accept="image/*" />
+    </label>
+
+    <div id="previewWrapper" style="display:none;">
+      <img id="previewImg" alt="preview" />
+      <canvas id="heatmapCanvas"></canvas>
+    </div>
+
+    <br/>
+    <button id="sendBtn" disabled>Send to /predict</button>
+  </div>
+
+  <div class="card">
+    <h2>Inference Result</h2>
+    <div class="metrics" id="metrics">
+      <span>Anomaly score: <strong>-</strong></span>
+      <span>Model: <strong>-</strong></span>
+      <span>From cache: <strong>-</strong></span>
+    </div>
+    <h3>Raw JSON</h3>
+    <pre id="responseBox">{}</pre>
+  </div>
+
+  <script>
+    const API_URL = "https://aeapulj2bf.execute-api.us-east-1.amazonaws.com/predict"; // e.g. https://d1234abcd.cloudfront.net/predict
+
+    const fileInput = document.getElementById("fileInput");
+    const previewWrapper = document.getElementById("previewWrapper");
+    const previewImg = document.getElementById("previewImg");
+    const heatmapCanvas = document.getElementById("heatmapCanvas");
+    const sendBtn = document.getElementById("sendBtn");
+    const responseBox = document.getElementById("responseBox");
+    const metricsBox = document.getElementById("metrics");
+
+    let currentImageBytes = null;
+
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      const url = URL.createObjectURL(file);
+      previewImg.onload = () => {
+        // Resize heatmap canvas to the displayed image size
+        heatmapCanvas.width = previewImg.naturalWidth;
+        heatmapCanvas.height = previewImg.naturalHeight;
+        previewWrapper.style.display = "inline-block";
+      };
+      previewImg.src = url;
+
+      // Read bytes for upload
+      const reader = new FileReader();
+      reader.onload = () => {
+        currentImageBytes = new Uint8Array(reader.result);
+        sendBtn.disabled = false;
+      };
+      reader.readAsArrayBuffer(file);
+    });
+
+    function updateMetrics(result) {
+      const spans = metricsBox.querySelectorAll("span strong");
+      spans[0].textContent = result.anomaly_score != null ? result.anomaly_score.toFixed(4) : "-";
+      spans[1].textContent = result.model || "-";
+      spans[2].textContent = String(result.from_cache);
+    }
+
+    function drawHeatmap(heatmap) {
+      if (!heatmap || !heatmap.length) return;
+
+      const h = heatmap.length;
+      const w = heatmap[0].length;
+
+      // Resize canvas to heatmap resolution; CSS will scale to match image box
+      heatmapCanvas.width = w;
+      heatmapCanvas.height = h;
+
+      const ctx = heatmapCanvas.getContext("2d");
+      const imgData = ctx.createImageData(w, h);
+
+      // Flatten & normalize
+      let min = Infinity, max = -Infinity;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const v = heatmap[y][x];
+          if (v < min) min = v;
+          if (v > max) max = v;
+        }
+      }
+      const range = max - min || 1.0;
+
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const v = (heatmap[y][x] - min) / range; // 0..1
+          const idx = (y * w + x) * 4;
+
+          // Simple red colormap: transparent for low, red for high
+          imgData.data[idx] = 255;          // R
+          imgData.data[idx + 1] = 0;        // G
+          imgData.data[idx + 2] = 0;        // B
+          imgData.data[idx + 3] = Math.round(v * 200); // alpha 0..200
+        }
+      }
+
+      ctx.putImageData(imgData, 0, 0);
+
+      // Make canvas overlay same CSS size as image
+      const displayWidth = previewImg.clientWidth || w;
+      const scale = displayWidth / w;
+      heatmapCanvas.style.width = (w * scale) + "px";
+      heatmapCanvas.style.height = (h * scale) + "px";
+    }
+
+    document.getElementById("sendBtn").onclick = async () => {
+      if (!currentImageBytes) { alert("Choose an image first"); return; }
+
+      const model = document.getElementById("model").value;
+      const className = document.getElementById("class_name").value || "bottle";
+
+      // Base64-encode bytes
+      let binary = "";
+      currentImageBytes.forEach(b => { binary += String.fromCharCode(b); });
+      const b64 = btoa(binary);
+
+      const payload = {
+        class_name: className,
+        image_base64: b64,
+        model: model
+      };
+
+      sendBtn.disabled = true;
+      responseBox.textContent = "Sending request to " + API_URL + " ...";
+
+      try {
+        const resp = await fetch(API_URL, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(payload)
+        });
+        const data = await resp.json();
+        responseBox.textContent = JSON.stringify(data, null, 2);
+        updateMetrics(data);
+        drawHeatmap(data.anomaly_heatmap);
+      } catch (err) {
+        responseBox.textContent = "Error: " + err;
+      } finally {
+        sendBtn.disabled = false;
+      }
+    };
+  </script>
+</body>
+</html>
