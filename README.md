@@ -136,7 +136,7 @@ Used index.html for UI in S3 Bucket.
 
 ### CloudFront URL
 ```
-https://d3abcxyz123.cloudfront.net/
+https://d468m4bg4wc2w.cloudfront.net
 ```
 
 ### Direct S3 URL
